@@ -1,0 +1,393 @@
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  PATIENT
+  DOCTOR
+  HOSPITAL
+  CAREGIVER
+  ADMIN
+}
+
+model User {
+  id               String            @id @default(auto()) @map("_id") @db.ObjectId
+  email            String            @unique
+  passwordHash     String
+  role             Role              @default(PATIENT)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  deletedAt        DateTime?         // Soft delete strategy
+  
+  profile          Profile?
+  doctor           Doctor?
+  sessions         Session[]
+  otpVerifications OTPVerification[]
+  auditLogs        AuditLog[]
+  activityLogs     ActivityLog[]
+  medicalRecords   MedicalRecord[]
+  vaccinations     Vaccination[]
+  allergies        Allergy[]
+  diagnoses        Diagnosis[]
+  appointments     Appointment[]     @relation("PatientAppointments")
+  emergencyCard    EmergencyCard?
+  
+  // Doctor Access
+  grantedAccesses  DoctorAccess[]    @relation("PatientAccesses")
+  
+  // Consents given/received
+  consentsGiven    Consent[]         @relation("ConsentGranter")
+  consentsReceived Consent[]         @relation("ConsentReceiver")
+
+  // Families
+  familiesOwned    Family[]          @relation("FamilyOwner")
+  familyMemberships FamilyMember[]
+  aiInsights       AIInsight[]
+  medications      Medication[]
+  
+  // Explicit Role systems
+  userRoles        UserRole[]
+}
+
+model Profile {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String   @unique @db.ObjectId
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Encrypted fields (AES-256 in app code, schema holds ciphertext strings)
+  fullName         String
+  dob              String   // Encrypted Date of Birth
+  gender           String   // Encrypted
+  bloodGroup       String   // Encrypted
+  height           String   // Encrypted
+  weight           String   // Encrypted
+  emergencyContact String   // Encrypted
+  address          String   // Encrypted
+  insuranceInfo    String   // Encrypted
+  healthId         String   @unique // National Health ID
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model MedicalCategory {
+  id             String          @id @default(auto()) @map("_id") @db.ObjectId
+  name           String          @unique
+  slug           String          @unique // e.g. lab-report, prescription, vaccine-certificate
+  medicalRecords MedicalRecord[]
+}
+
+model MedicalRecord {
+  id                       String          @id @default(auto()) @map("_id") @db.ObjectId
+  userId                   String          @db.ObjectId
+  user                     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  title                    String
+  description              String?
+  categoryId               String          @db.ObjectId
+  category                 MedicalCategory @relation(fields: [categoryId], references: [id])
+  
+  recordUrl                String          // Cloudinary secure link
+  recordType               String          // PDF, JPG, PNG
+  
+  doctorId                 String?         @db.ObjectId // If added by a doctor
+  doctor                   Doctor?         @relation(fields: [doctorId], references: [id])
+  facilityId               String?         // Hospital or Lab identifier
+  uploadDate               DateTime        @default(now())
+  isVerified               Boolean         @default(false)
+  notes                    String?
+  
+  // AI summarization outputs
+  summary                  String?
+  keyFindings              String?
+  followUpRecommendations  String?
+  
+  prescriptions            Prescription[]
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+  deletedAt                DateTime?       // Soft delete
+}
+
+model Prescription {
+  id              String        @id @default(auto()) @map("_id") @db.ObjectId
+  medicalRecordId String        @db.ObjectId
+  medicalRecord   MedicalRecord @relation(fields: [medicalRecordId], references: [id], onDelete: Cascade)
+  
+  doctorId        String        @db.ObjectId
+  doctor          Doctor        @relation(fields: [doctorId], references: [id])
+  date            DateTime      @default(now())
+  
+  // Embedded/Array structure for list of medicines
+  medicines       Medicine[]
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+type Medicine {
+  name      String
+  dosage    String // e.g. 500mg
+  frequency String // e.g. Twice daily
+  duration  String // e.g. 5 days
+}
+
+model Doctor {
+  id              String          @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String          @unique @db.ObjectId
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  licenseNumber   String          @unique
+  specialization  String
+  facilityName    String
+  verifiedStatus  Boolean         @default(false)
+  
+  prescriptions   Prescription[]
+  medicalRecords  MedicalRecord[]
+  appointments    Appointment[]
+  accesses        DoctorAccess[]
+  
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model DoctorAccess {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  patientId     String    @db.ObjectId
+  patient       User      @relation("PatientAccesses", fields: [patientId], references: [id], onDelete: Cascade)
+  
+  doctorId      String    @db.ObjectId
+  doctor        Doctor    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  
+  accessGranted Boolean   @default(true)
+  expiryDate    DateTime
+  grantedAt     DateTime  @default(now())
+  revokedAt     DateTime?
+}
+
+model Vaccination {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String   @db.ObjectId
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  vaccineName       String
+  doseNumber        Int
+  dateAdministered  DateTime
+  facilityName      String?
+  reminderDate      DateTime?
+  notes             String?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Allergy {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  allergyType String   // e.g. Drug, Food, Environmental
+  allergen    String   // e.g. Penicillin, Peanuts
+  severity    String   // LOW, MEDIUM, HIGH
+  notes       String?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Diagnosis {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String    @db.ObjectId
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  condition     String
+  diagnosedDate DateTime
+  status        String    // ACTIVE, RESOLVED
+  notes         String?
+  doctorId      String?   @db.ObjectId
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Appointment {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  patientId     String   @db.ObjectId
+  patient       User     @relation("PatientAppointments", fields: [patientId], references: [id], onDelete: Cascade)
+  
+  doctorId      String   @db.ObjectId
+  doctor        Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  
+  dateTime      DateTime
+  status        String   // SCHEDULED, COMPLETED, CANCELLED
+  notes         String?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model EmergencyCard {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String   @unique @db.ObjectId
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  qrCodeUrl        String?  // Cloudinary/Local asset QR path
+  publicProfileSlug String  @unique // Hash identifier for emergency access
+  isPublicActive   Boolean  @default(true)
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Notification {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  message     String
+  type        String   // INFO, WARNING, ALERT
+  readStatus  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String?  @db.ObjectId // Nullable for non-authenticated actions e.g. login failures
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  action    String   // LOGIN, LOGOUT, RECORD_ACCESS, RECORD_DOWNLOAD, PERMISSION_CHANGE
+  details   String
+  ipAddress String
+  timestamp DateTime @default(now())
+}
+
+model Family {
+  id            String         @id @default(auto()) @map("_id") @db.ObjectId
+  primaryUserId String         @db.ObjectId
+  primaryUser   User           @relation("FamilyOwner", fields: [primaryUserId], references: [id], onDelete: Cascade)
+  
+  name          String
+  members       FamilyMember[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model FamilyMember {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  familyId    String   @db.ObjectId
+  family      Family   @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  
+  userId      String   @db.ObjectId
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  relation    String   // CHILD, PARENT, CAREGIVER, DEPENDENT
+  accessLevel String   // ADMIN, VIEW_ONLY, FULL_ACCESS
+  createdAt   DateTime @default(now())
+}
+
+model Consent {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String    @db.ObjectId
+  granter     User      @relation("ConsentGranter", fields: [userId], references: [id], onDelete: Cascade)
+  
+  doctorUserId String   @db.ObjectId
+  receiver    User      @relation("ConsentReceiver", fields: [doctorUserId], references: [id], onDelete: Cascade)
+  
+  permissions String[]  // List of shared categories e.g. ["prescriptions", "lab-reports"]
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+}
+
+model Session {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String   @db.ObjectId
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  refreshToken String   @unique
+  deviceDetails String?
+  expiresAt    DateTime
+  isValid      Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+model OTPVerification {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  email     String
+  user      User?     @relation(fields: [userId], references: [id])
+  userId    String?   @db.ObjectId
+  
+  code      String
+  purpose   String    // REGISTER, LOGIN, RESET
+  expiresAt DateTime
+  verifiedAt DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model AIInsight {
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId              String   @db.ObjectId
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  healthTrends        String?
+  riskIndicators      String?
+  medicationAdherence String?
+  generatedAt         DateTime @default(now())
+}
+
+model ActivityLog {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  actionType  String
+  description String
+  timestamp   DateTime @default(now())
+}
+
+// Explicit Roles, Permissions, RolePermissions, and UserRoles tables as requested in db design
+
+model RoleModel {
+  id              String           @id @default(auto()) @map("_id") @db.ObjectId
+  name            String           @unique // PATIENT, DOCTOR, HOSPITAL, CAREGIVER, ADMIN
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+}
+
+model Permission {
+  id              String           @id @default(auto()) @map("_id") @db.ObjectId
+  name            String           @unique // e.g. READ_RECORDS, WRITE_RECORDS, etc.
+  rolePermissions RolePermission[]
+}
+
+model RolePermission {
+  id           String     @id @default(auto()) @map("_id") @db.ObjectId
+  roleId       String     @db.ObjectId
+  role         RoleModel  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String     @db.ObjectId
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+}
+
+model UserRole {
+  id     String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId String    @db.ObjectId
+  user   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId String    @db.ObjectId
+  role   RoleModel @relation(fields: [roleId], references: [id], onDelete: Cascade)
+}
+
+model Medication {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  dosage      String
+  frequency   String
+  duration    String
+  reminders   Boolean  @default(true)
+  refillsLeft Int      @default(3)
+  adherence   Int      @default(100)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
